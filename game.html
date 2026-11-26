@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Flappy Bird (Generic Version)</title>
+<style>
+  body { margin: 0; background: #87CEEB; overflow: hidden; font-family: Arial, sans-serif; }
+  canvas { display: block; margin: auto; background: #70c5ce; }
+  #overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    gap: 16px;
+  }
+  #overlay.hidden { display: none; }
+  #overlay h1 { margin: 0; font-size: 40px; }
+  #overlay p { margin: 0; font-size: 22px; }
+  #startBtn {
+    padding: 12px 28px;
+    font-size: 20px;
+    font-weight: bold;
+    color: #fff;
+    background: #2ecc71;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  #startBtn:hover { background: #27ae60; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="overlay">
+  <h1 id="overlayTitle">Flappy Bird</h1>
+  <p id="overlayScore" style="display: none;"></p>
+  <button id="startBtn">Start</button>
+</div>
+<script>
+/* =====================================================
+   WHERE TO PUT YOUR FILES (IMPORTANT)
+   -----------------------------------------------------
+   1. Replace "assets/bird.png" with your bird image.
+   2. Replace "assets/pillar.png" with your pillar image.
+   3. Replace "assets/pass.mp3" with sound for crossing pillar.
+   4. Replace "assets/hit.mp3" with sound for crashing.
+   -----------------------------------------------------
+   Place your files in an "assets" folder OR change paths below.
+   ===================================================== */
+
+// IMAGE & SOUND PATHS (CHANGE THESE)
+const BIRD_SRC = "assets/plane-bird.png"; // your bird image
+const PILLAR_SRC = "assets/pillar.png";   // your pillar image
+const PASS_SOUND_SRC = "assets/pass.mp3"; // sound when crossing
+const HIT_SOUND_SRC = "assets/hit.mp3";   // sound when hit
+
+// Load images
+const birdImg = new Image(); birdImg.src = BIRD_SRC;
+const pillarImg = new Image(); pillarImg.src = PILLAR_SRC;
+
+// Load sounds
+const passSound = new Audio(PASS_SOUND_SRC);
+const hitSound = new Audio(HIT_SOUND_SRC);
+
+// Canvas & overlay setup
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const overlay = document.getElementById("overlay");
+const overlayTitle = document.getElementById("overlayTitle");
+const overlayScore = document.getElementById("overlayScore");
+const startBtn = document.getElementById("startBtn");
+
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+resizeCanvas();
+window.addEventListener("resize", resizeCanvas);
+
+// Game variables
+let bird = { x: 80, y: 250, w: 56, h: 40, vy: 0 };
+let gravity = 0.2;
+let flapStrength = -5;
+let pillars = [];
+let items = [];
+let jets = [];
+let pillarCount = 0;
+let gap = 450;
+const PILLAR_SPACING = 360;
+const MAX_GAP_STEP = 240;
+let speed = 4.2;
+let score = 0;
+let running = false;
+let invincibleUntil = 0;
+const INVINCIBLE_DURATION_MS = 5000;
+let nextJetTime = 0;
+let explosion = null;
+let blastTimeout = null;
+
+function spawnPillar() {
+  const effectiveGap = Math.min(gap, Math.max(180, canvas.height - 120));
+  const minY = effectiveGap / 2 + 40;
+  const maxY = Math.max(minY, canvas.height - effectiveGap / 2 - 40);
+
+  let low = minY;
+  let high = maxY;
+  if (pillars.length > 0) {
+    const prevGapY = pillars[pillars.length - 1].gapY;
+    low = Math.max(minY, prevGapY - MAX_GAP_STEP);
+    high = Math.min(maxY, prevGapY + MAX_GAP_STEP);
+  }
+
+  const gapY = low + Math.random() * (high - low);
+  const x = pillars.length > 0 ? pillars[pillars.length - 1].x + PILLAR_SPACING : canvas.width;
+  pillars.push({ x, gapY, gap: effectiveGap });
+
+  pillarCount++;
+  if (pillarCount % 8 === 0) {
+    let offsetY = (Math.random() - 0.5) * (effectiveGap * 0.45);
+    items.push({ x: x + 12, y: gapY + offsetY - 18, size: 36 });
+  }
+}
+
+function spawnJet() {
+  const w = 96;
+  const h = 34;
+  const minY = 60;
+  const maxY = Math.max(minY, canvas.height - h - 60);
+  const y = minY + Math.random() * (maxY - minY);
+  jets.push({ x: canvas.width + 40, y, w, h, speed: speed * 1.9 });
+}
+
+function triggerBlast(cx, cy) {
+  if (!running) return;
+  hitSound.play();
+  running = false;
+  const particles = [];
+  const colors = ["#ff4500", "#ff8c00", "#ffd700", "#ffffff", "#555555"];
+  for (let i = 0; i < 28; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = 2 + Math.random() * 6;
+    particles.push({
+      x: cx,
+      y: cy,
+      vx: Math.cos(angle) * spd,
+      vy: Math.sin(angle) * spd,
+      r: 4 + Math.random() * 8,
+      color: colors[i % colors.length]
+    });
+  }
+  explosion = { x: cx, y: cy, radius: 14, alpha: 1, particles };
+  blastTimeout = setTimeout(() => {
+    overlayTitle.textContent = "Game Over 💥";
+    overlayScore.textContent = "Score: " + score;
+    overlayScore.style.display = "block";
+    startBtn.textContent = "Start Again";
+    overlay.classList.remove("hidden");
+  }, 550);
+}
+
+function startGame() {
+  if (blastTimeout) {
+    clearTimeout(blastTimeout);
+    blastTimeout = null;
+  }
+  bird = { x: 80, y: 250, w: 56, h: 40, vy: 0 };
+  pillars = [];
+  items = [];
+  jets = [];
+  pillarCount = 0;
+  score = 0;
+  invincibleUntil = 0;
+  explosion = null;
+  nextJetTime = Date.now() + 2500;
+  spawnPillar();
+  while (pillars[pillars.length - 1].x < canvas.width + PILLAR_SPACING) {
+    spawnPillar();
+  }
+  running = true;
+  overlay.classList.add("hidden");
+}
+
+function endGame() {
+  if (!running) return;
+  hitSound.play();
+  running = false;
+  overlayTitle.textContent = "Game Over";
+  overlayScore.textContent = "Score: " + score;
+  overlayScore.style.display = "block";
+  startBtn.textContent = "Start Again";
+  overlay.classList.remove("hidden");
+}
+
+startBtn.addEventListener("click", startGame);
+
+function update() {
+  if (explosion) {
+    explosion.radius += 3.5;
+    explosion.alpha = Math.max(0, explosion.alpha - 0.025);
+    for (let pt of explosion.particles) {
+      pt.x += pt.vx;
+      pt.y += pt.vy;
+      pt.r *= 0.96;
+    }
+  }
+
+  if (!running) return;
+
+  const isInvincible = Date.now() < invincibleUntil;
+
+  bird.vy += gravity;
+  bird.y += bird.vy;
+
+  // Move pillars
+  for (let p of pillars) p.x -= speed;
+
+  // Spawn & move American fighter jets (right-to-left straight path)
+  if (Date.now() >= nextJetTime) {
+    spawnJet();
+    nextJetTime = Date.now() + 2200 + Math.random() * 1800;
+  }
+  for (let i = jets.length - 1; i >= 0; i--) {
+    let jet = jets[i];
+    jet.x -= jet.speed;
+
+    // Forgiving hitbox for dodging
+    const pad = 6;
+    if (
+      !isInvincible &&
+      bird.x + bird.w - pad > jet.x + pad &&
+      bird.x + pad < jet.x + jet.w - pad &&
+      bird.y + bird.h - pad > jet.y + pad &&
+      bird.y + pad < jet.y + jet.h - pad
+    ) {
+      triggerBlast(bird.x + bird.w / 2, bird.y + bird.h / 2);
+      return;
+    }
+
+    if (jet.x + jet.w < -40) {
+      jets.splice(i, 1);
+    }
+  }
+
+  // Move & collect special items
+  for (let i = items.length - 1; i >= 0; i--) {
+    let item = items[i];
+    item.x -= speed;
+
+    if (
+      bird.x < item.x + item.size &&
+      bird.x + bird.w > item.x &&
+      bird.y < item.y + item.size &&
+      bird.y + bird.h > item.y
+    ) {
+      invincibleUntil = Date.now() + INVINCIBLE_DURATION_MS;
+      passSound.play();
+      items.splice(i, 1);
+      continue;
+    }
+
+    if (item.x + item.size < 0) {
+      items.splice(i, 1);
+    }
+  }
+
+  // Remove off-screen pillars + spawn new
+  while (pillars.length > 0 && pillars[0].x + 60 < 0) {
+    pillars.shift();
+  }
+  while (pillars.length === 0 || pillars[pillars.length - 1].x < canvas.width) {
+    spawnPillar();
+  }
+
+  // Collision + score handling
+  for (let p of pillars) {
+    let topH = p.gapY - p.gap / 2;
+    let bottomY = p.gapY + p.gap / 2;
+
+    // scoring
+    if (!p.scored && p.x + 60 < bird.x) {
+      p.scored = true;
+      score++;
+      passSound.play();
+    }
+
+    // collision detection
+    let hitTop = bird.x + bird.w > p.x && bird.x < p.x + 60 && bird.y < topH;
+    let hitBottom = bird.x + bird.w > p.x && bird.x < p.x + 60 && bird.y + bird.h > bottomY;
+    if (!isInvincible && (hitTop || hitBottom)) {
+      endGame();
+      return;
+    }
+  }
+
+  // ground/sky
+  if (bird.y < 0 || bird.y + bird.h > canvas.height) {
+    if (isInvincible) {
+      bird.y = Math.max(0, Math.min(canvas.height - bird.h, bird.y));
+      bird.vy = 0;
+    } else {
+      endGame();
+    }
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Draw pillars
+  for (let p of pillars) {
+    let topH = p.gapY - p.gap / 2;
+    let bottomY = p.gapY + p.gap / 2;
+
+    ctx.fillStyle = "#2e4053";
+ctx.fillRect(p.x, 0, 60, topH);
+// windows
+for (let wy = 10; wy < topH - 20; wy += 20) {
+  for (let wx = 5; wx < 55; wx += 20) {
+    ctx.fillStyle = "#d5d8dc";
+    ctx.fillRect(p.x + wx, wy, 10, 14);
+    ctx.fillStyle = "#2e4053";
+  }
+}
+ctx.fillStyle = "#1c2833";
+ctx.fillRect(p.x, topH - 12, 60, 12);
+    ctx.fillStyle = "#2e4053";
+ctx.fillRect(p.x, bottomY, 60, canvas.height - bottomY);
+// windows
+for (let wy = bottomY + 10; wy < canvas.height - 20; wy += 20) {
+  for (let wx = 5; wx < 55; wx += 20) {
+    ctx.fillStyle = "#d5d8dc";
+    ctx.fillRect(p.x + wx, wy, 10, 14);
+    ctx.fillStyle = "#2e4053";
+  }
+}
+ctx.fillStyle = "#1c2833";
+ctx.fillRect(p.x, bottomY, 60, 12);
+  }
+
+  // Draw special items
+  for (let item of items) {
+    let cx = item.x + item.size / 2;
+    let cy = item.y + item.size / 2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, item.size * 0.65, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 215, 0, 0.35)";
+    ctx.fill();
+    ctx.font = item.size + "px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("🕋", cx, cy);
+    ctx.restore();
+  }
+
+  // Draw American fighter jets
+  for (let jet of jets) {
+    ctx.save();
+    const x = jet.x;
+    const y = jet.y;
+    const w = jet.w;
+    const h = jet.h;
+
+    // Afterburner flame at rear (right side)
+    const flameLen = 14 + Math.random() * 12;
+    ctx.beginPath();
+    ctx.moveTo(x + w - 4, y + h * 0.42);
+    ctx.lineTo(x + w + flameLen, y + h * 0.52);
+    ctx.lineTo(x + w - 4, y + h * 0.62);
+    ctx.closePath();
+    ctx.fillStyle = "#ff6b00";
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x + w - 4, y + h * 0.46);
+    ctx.lineTo(x + w + flameLen * 0.6, y + h * 0.52);
+    ctx.lineTo(x + w - 4, y + h * 0.58);
+    ctx.closePath();
+    ctx.fillStyle = "#ffd700";
+    ctx.fill();
+
+    // Swept vertical tail fin
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.72, y + h * 0.4);
+    ctx.lineTo(x + w * 0.92, y + 2);
+    ctx.lineTo(x + w * 0.96, y + 2);
+    ctx.lineTo(x + w * 0.9, y + h * 0.42);
+    ctx.closePath();
+    ctx.fillStyle = "#4a5868";
+    ctx.fill();
+
+    // Main fuselage (facing left)
+    ctx.beginPath();
+    ctx.moveTo(x, y + h * 0.54);
+    ctx.lineTo(x + w * 0.22, y + h * 0.34);
+    ctx.lineTo(x + w * 0.94, y + h * 0.38);
+    ctx.lineTo(x + w - 4, y + h * 0.52);
+    ctx.lineTo(x + w * 0.94, y + h * 0.66);
+    ctx.lineTo(x + w * 0.22, y + h * 0.68);
+    ctx.closePath();
+    ctx.fillStyle = "#7f8c8d";
+    ctx.fill();
+    ctx.strokeStyle = "#2c3e50";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Swept delta wing
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.42, y + h * 0.56);
+    ctx.lineTo(x + w * 0.74, y + h - 1);
+    ctx.lineTo(x + w * 0.82, y + h - 1);
+    ctx.lineTo(x + w * 0.7, y + h * 0.56);
+    ctx.closePath();
+    ctx.fillStyle = "#5d6d7e";
+    ctx.fill();
+
+    // Tinted cockpit canopy
+    ctx.beginPath();
+    ctx.ellipse(x + w * 0.36, y + h * 0.36, w * 0.12, h * 0.14, -0.1, Math.PI, 0);
+    ctx.fillStyle = "#5dade2";
+    ctx.fill();
+
+    // Red-white-blue US air force accent stripe + star
+    ctx.fillStyle = "#1f4e79";
+    ctx.fillRect(x + w * 0.52, y + h * 0.45, 16, 6);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(x + w * 0.57, y + h * 0.45, 6, 6);
+    ctx.fillStyle = "#c0392b";
+    ctx.fillRect(x + w * 0.52, y + h * 0.47, 16, 2);
+
+    ctx.restore();
+  }
+
+  // Draw bird
+  const remainingMs = invincibleUntil - Date.now();
+  if (remainingMs > 0) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(bird.x + bird.w / 2, bird.y + bird.h / 2, Math.max(bird.w, bird.h) * 0.72, 0, Math.PI * 2);
+    ctx.strokeStyle = "#ffd700";
+    ctx.lineWidth = 4;
+    ctx.fillStyle = "rgba(255, 215, 0, 0.25)";
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (!explosion) {
+    ctx.drawImage(birdImg, bird.x, bird.y, bird.w, bird.h);
+  } else {
+    ctx.save();
+    ctx.globalAlpha = explosion.alpha;
+    ctx.beginPath();
+    ctx.arc(explosion.x, explosion.y, explosion.radius, 0, Math.PI * 2);
+    ctx.fillStyle = "#ff6b00";
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(explosion.x, explosion.y, explosion.radius * 0.55, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffd700";
+    ctx.fill();
+    for (let pt of explosion.particles) {
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, Math.max(0.5, pt.r), 0, Math.PI * 2);
+      ctx.fillStyle = pt.color;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // Score
+  ctx.fillStyle = "#fff";
+  ctx.font = "28px Arial";
+  ctx.fillText("Score: " + score, 10, 40);
+
+  if (remainingMs > 0) {
+    ctx.fillStyle = "#ffd700";
+    ctx.font = "22px Arial";
+    ctx.fillText("🕋 Invincible: " + (remainingMs / 1000).toFixed(1) + "s", 10, 72);
+  }
+}
+
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+requestAnimationFrame(gameLoop);
+
+// Controls
+window.addEventListener("keydown", e => {
+  if (e.code === "Space" && running) bird.vy = flapStrength;
+});
+canvas.addEventListener("mousedown", () => {
+  if (running) bird.vy = flapStrength;
+});
+</script>
+</body>
+</html>
